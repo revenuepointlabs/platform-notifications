@@ -105,15 +105,56 @@ async function storeEvent({ type, level, message, service, metadata }) {
     }
 }
 
+// Function to validate the API key and service match
+async function validateApiKeyAndService(apiKey, service) {
+    const client = await pool.connect();
+    try {
+        const result = await client.query('SELECT * FROM api_keys WHERE api_key = $1 AND service_name = $2 AND active = TRUE', [apiKey, service]);
+        return result.rows.length > 0;  // True if there's a matching API key and service
+    } catch (error) {
+        console.error('Error validating API key and service:', error);
+        return false;
+    } finally {
+        client.release();
+    }
+}
+
+// Function to validate the API key and service match
+async function validateApiKeyAndService(apiKey, service) {
+    const client = await pool.connect();
+    try {
+        const result = await client.query('SELECT * FROM api_keys WHERE api_key = $1 AND service_name = $2 AND active = TRUE', [apiKey, service]);
+        return result.rows.length > 0;  // True if there's a matching API key and service
+    } catch (error) {
+        console.error('Error validating API key and service:', error);
+        return false;
+    } finally {
+        client.release();
+    }
+}
+
 app.post('/platform-event', async (req, res) => {
     const { type, level, message, service, metadata } = req.body;
+    const apiKey = req.headers['x-api-key'];  // Get API key from request headers
 
-    // Ensure that the 'level' is one of the expected PagerDuty severity levels
-    const validLevels = ['critical', 'error', 'warning', 'info'];
-    if (!type || !level || !message || !service || !validLevels.includes(level)) {
-        return res.status(400).send({ error: 'Invalid input. Type, level, message, and service are required, and level must be one of: critical, error, warning, info.' });
+    // Check if the API key and service match in the database
+    if (!apiKey || !(await validateApiKeyAndService(apiKey, service))) {
+        const errorMessage = `Invalid API Key or API Key does not match the service: ${service}`;
+        console.error(errorMessage);
+
+        // Log the API key error to the database
+        await storeEvent({
+            type: 'system_notifications',
+            level: 'warning',
+            message: errorMessage,
+            service: 'platform-notifications',
+            metadata: { apiKey, service }
+        });
+
+        return res.status(403).send({ error: 'Forbidden: Invalid API Key or Service' });
     }
 
+    // Proceed with the rest of the logic if the key and service match
     try {
         // Send to Webex space
         await sendToWebex({ type, level, message, service });

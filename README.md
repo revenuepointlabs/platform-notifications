@@ -1,6 +1,6 @@
 # Webex Notify - Platform Notification Service
 
-This project is a Node.js application that sends platform notifications to a Webex space and PagerDuty. It stores event details in a PostgreSQL database and supports dynamic routing to different PagerDuty services based on the event's source (`service` field). Severity levels are used to control the urgency of the PagerDuty alerts.
+This project is a Node.js application that sends platform notifications to a Webex space and PagerDuty. It stores event details in a PostgreSQL database and supports dynamic routing to different PagerDuty services based on the event's source (`service` field). API key authentication is required for accessing the platform notification service, with each API key tied to a specific service. Severity levels are used to control the urgency of the PagerDuty alerts.
 
 ## Features
 
@@ -9,6 +9,7 @@ This project is a Node.js application that sends platform notifications to a Web
 - Dynamically sets the severity level for PagerDuty, which maps to notification urgency.
 - Stores event details in a PostgreSQL database.
 - Supports `info`, `warning`, `error`, and `critical` severity levels.
+- **API key authentication** for securing access to the `/platform-event` endpoint.
 
 ## Table of Contents
 
@@ -16,6 +17,7 @@ This project is a Node.js application that sends platform notifications to a Web
 - [Installation](#installation)
 - [Environment Variables](#environment-variables)
 - [Database Setup](#database-setup)
+- [API Key Management](#api-key-management)
 - [API Endpoints](#api-endpoints)
 - [Running the Application](#running-the-application)
 - [How to Use in Another Node.js Application](#how-to-use-in-another-nodejs-application)
@@ -41,6 +43,7 @@ Before running this application, ensure you have the following installed:
 - [PostgreSQL](https://www.postgresql.org/) (locally or hosted)
 - A Webex access token for sending messages to a Webex space.
 - PagerDuty API key and integration keys for each service you want to monitor.
+- **API keys** for authentication to access the platform notification service.
 
 ## Installation
 
@@ -119,11 +122,65 @@ VALUES ('auth_service', 'PAGERDUTY_INTEGRATION_KEY_FOR_AUTH'),
        ('db_service', 'PAGERDUTY_INTEGRATION_KEY_FOR_DB');
 ```
 
+### Create the `api_keys` Table:
+
+```sql
+CREATE TABLE api_keys (
+    id SERIAL PRIMARY KEY,
+    api_key VARCHAR(64) UNIQUE NOT NULL,
+    service_name VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    active BOOLEAN DEFAULT TRUE
+);
+```
+
+You can insert records for API keys associated with each service:
+
+```sql
+INSERT INTO api_keys (api_key, service_name)
+VALUES ('YOUR_GENERATED_API_KEY', 'memory_monitor'),
+       ('ANOTHER_API_KEY', 'db_service');
+```
+
+## API Key Management
+
+To secure access to the `/platform-event` endpoint, the application requires that each request includes an API key. The API key must be associated with the `service` provided in the request. Only valid API keys are allowed to trigger platform events.
+
+- API keys are stored in the `api_keys` table with a corresponding `service_name`.
+- Incoming requests are validated to ensure the provided API key matches the `service` in the request body.
+
+**To generate a new API key**, you can use the following script in Node.js:
+
+```javascript
+const crypto = require('crypto');
+
+function generateApiKey() {
+    return crypto.randomBytes(32).toString('hex'); // Generates a 64-character API key
+}
+
+console.log(generateApiKey());
+```
+
+Once generated, you can insert the API key into the `api_keys` table along with the corresponding service.
+
+### Example of Inserting an API Key:
+
+```sql
+INSERT INTO api_keys (api_key, service_name)
+VALUES ('YOUR_NEW_API_KEY', 'auth_service');
+```
+
 ## API Endpoints
 
 ### POST `/platform-event`
 
-Send a platform notification event to Webex and PagerDuty, and store it in the database.
+Send a platform notification event to Webex and PagerDuty, and store it in the database. Include an API key in the request headers.
+
+**Request Headers**:
+
+```bash
+x-api-key: YOUR_API_KEY
+```
 
 **Request Body**:
 
@@ -155,6 +212,14 @@ Send a platform notification event to Webex and PagerDuty, and store it in the d
 }
 ```
 
+If the provided API key is invalid or does not match the `service`, a `403 Forbidden` response will be returned.
+
+```json
+{
+  "error": "Forbidden: Invalid API Key or Service"
+}
+```
+
 ## Running the Application
 
 To start the application locally, use the following command:
@@ -163,7 +228,7 @@ To start the application locally, use the following command:
 npm start
 ```
 
-The server will start on the specified port (default: 3000). You can now send HTTP POST requests to the `/platform-event` endpoint.
+The server will start on the specified port (default: 3000). You can now send HTTP POST requests to the `/platform-event` endpoint, ensuring to include a valid API key in the headers.
 
 ### Testing the API
 
@@ -171,6 +236,7 @@ Use `curl` or Postman to send POST requests to the `/platform-event` endpoint:
 
 ```bash
 curl -X POST http://localhost:3000/platform-event \
+  -H "x-api-key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
         "type": "system_alert",
@@ -185,9 +251,37 @@ curl -X POST http://localhost:3000/platform-event \
 
 ## How to Use in Another Node.js Application
 
-You can integrate this platform notification service into other Node.js applications by sending HTTP POST requests to the `/platform-event` endpoint whenever certain events occur (e.g., exceptions, warnings, or informational logs).
+You can integrate this platform notification service into other Node.js applications by sending HTTP POST requests to the `/platform-event` endpoint whenever certain events occur (e.g., exceptions, warnings, or informational logs). **Remember to include the API key in the request headers** for authentication.
 
 Here’s how you can use this notification service with examples for each severity level (`critical`, `error`, `warning`, `info`).
+
+### Required Request Headers:
+
+Include the `x-api-key` header in the request, along with the corresponding API key associated with the service:
+
+```bash
+x-api-key: YOUR_API_KEY
+```
+
+### Example of Adding the API Key in the Request (for all examples below):
+
+```javascript
+const axios = require('axios');
+
+async function sendEvent() {
+    await axios.post('http://localhost:3000/platform-event', {
+        type: 'system_alert',
+        level: 'critical',
+        message: 'System outage detected',
+        service: 'web_server',
+        metadata: { uptime: '99.8%' }
+    }, {
+        headers: {
+            'x-api-key': 'YOUR_API_KEY'
+        }
+    });
+}
+```
 
 #### **1. Critical Event Example**: System Outage or Security Breach
 
@@ -212,6 +306,10 @@ async function handleSystemOutage() {
             metadata: {
                 uptime: '99.8%',
                 time: new Date().toISOString()
+            }
+        }, {
+            headers: {
+                'x-api-key': 'YOUR_API_KEY'
             }
         });
         console.error('Critical: System outage reported.');
@@ -245,6 +343,10 @@ async function handleDatabaseConnection() {
                 connection_attempts: 3,
                 db_host: 'localhost'
             }
+        }, {
+            headers: {
+                'x-api-key': 'YOUR_API_KEY'
+            }
         });
         console.error('Error: Database connection failed.');
     }
@@ -275,6 +377,10 @@ async function monitorMemoryUsage() {
             metadata: {
                 memory_usage: `${memoryUsage}%`,
                 threshold: '80%'
+            }
+        }, {
+            headers: {
+                'x-api-key': 'YOUR_API_KEY'
             }
         });
         console.warn('Warning: High memory usage detected.');
@@ -307,6 +413,10 @@ async function systemStartup() {
             uptime: '0 days, 0 hours',
             time: new Date().toISOString()
         }
+    }, {
+        headers: {
+            'x-api-key': 'YOUR_API_KEY'
+        }
     });
 
     console.info('Info: System startup completed.');
@@ -321,26 +431,6 @@ You can use this service in a variety of scenarios, such as:
 - **Try-Catch Blocks**: Handle exceptions gracefully by sending `error` or `critical` events to PagerDuty and Webex.
 - **Regular Monitoring**: Use `info` events to track normal operations and `warning` events for potential issues that need attention.
 - **Critical Incidents**: Use `critical` events for system outages or security breaches that require immediate intervention.
-
-#### Testing the Events
-Once integrated, you can test these event levels by making POST requests to your platform notification service with real or simulated data. Use tools like Postman or `curl` to simulate different scenarios, such as:
-
-```bash
-curl -X POST http://localhost:3000/platform-event \
-  -H "Content-Type: application/json" \
-  -d '{
-        "type": "memory_alert",
-        "level": "warning",
-        "message": "Memory usage exceeded threshold",
-        "service": "memory_monitor",
-        "metadata": {
-          "memory_usage": "85%",
-          "threshold": "80%"
-        }
-      }'
-```
-
-This will send a `warning` event to Webex and PagerDuty and store the event in your PostgreSQL database for future reference.
 
 ## Monitoring CPU Usage in a Node.js App and Sending Events to the Notification Service
 
